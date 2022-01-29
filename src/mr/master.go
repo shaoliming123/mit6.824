@@ -1,15 +1,21 @@
 package mr
 
-import "log"
+import (
+	"log"
+	"path/filepath"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
 
+
 type Master struct {
 	// Your definitions here.
+	inputFiles []string
 
+	state State
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -46,12 +52,20 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
-	// Your code here.
+	ret :=()
 
 
 	return ret
+}
+
+func (m *Master) SetUp(files []string, nReduce int) error{
+	// 获得输入文件
+	inputFiles,err := getAllFile(files)
+	if err !=nil{
+		return err
+	}
+	m.inputFiles = inputFiles
+	return nil
 }
 
 //
@@ -59,12 +73,29 @@ func (m *Master) Done() bool {
 // main/mrmaster.go calls this function.
 // nReduce is the number of reduce tasks to use.
 //
+
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
-
+	if err := m.SetUp(files,nReduce); err!=nil{
+		panic(err)
+	}
 
 	m.server()
 	return &m
+}
+
+func getAllFile(files []string)([]string, error){
+	var allFiles []string
+	for _,file := range files{
+		glob, err := filepath.Glob(file)
+		if err !=nil{
+			return nil,err
+		}
+		if glob != nil{
+			allFiles = append(allFiles, glob...)
+		}
+	}
+	return allFiles,nil
 }

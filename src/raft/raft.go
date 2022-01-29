@@ -17,9 +17,13 @@ package raft
 //   in the same server.
 //
 
-import "sync"
+import (
+	"bytes"
+	"sync"
+)
 import "sync/atomic"
 import "../labrpc"
+import "../labgob"
 
 // import "bytes"
 // import "../labgob"
@@ -46,6 +50,25 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+
+type persistentState struct{
+	CurrentTerm int
+	VoteFor *int
+	Entry []struct{
+		Command []byte
+		Term int
+	}
+}
+
+type roleType int
+
+const (
+	follower roleType = iota
+	candidate
+	leader
+)
+
+
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -57,6 +80,9 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	persistentState persistentState
+
+	role roleType // default follower
 }
 
 // return currentTerm and whether this server
@@ -65,7 +91,12 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
+
 	// Your code here (2A).
+	rf.readPersist(rf.persister.ReadRaftState())
+	// TODO: should we add lock?
+	term = rf.persistentState.CurrentTerm
+	isleader = rf.role == leader
 	return term, isleader
 }
 
@@ -83,6 +114,11 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.persistentState)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 
@@ -106,6 +142,10 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	d.Decode(&rf.persistentState)
 }
 
 
@@ -117,6 +157,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int // candidate's term
+	CandidateId int  // candidate request vote
+	LastLogIndex int // candidate's last log entry
+	LastLogTerm  int // term of candidate's log entry
 }
 
 //
@@ -125,6 +169,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term int // currentTerm, for candidate to update
+	VoteGranted bool // true means candidate received vote
 }
 
 //
@@ -132,6 +178,19 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	if rf.persistentState.CurrentTerm > args.Term{
+		reply.Term = rf.persistentState.CurrentTerm
+		reply.VoteGranted = false
+	}
+	var voteGranted bool
+	if (rf.persistentState.VoteFor == nil ||  *rf.persistentState.VoteFor == args.CandidateId) &&
+		len(rf.persistentState.Entry) - 1 <= args.LastLogIndex{
+		voteGranted = true
+	}
+
+	reply.Term = args.Term
+	reply.VoteGranted = voteGranted
+
 }
 
 //
