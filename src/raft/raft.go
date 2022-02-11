@@ -411,7 +411,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					}
 					wg.Add(1)
 					go func(i int) {
-						defer wg.Done()
+						defer wg.Wait()
 						rf.mu.Lock()
 						p := rf.persistentState
 						rf.mu.Unlock()
