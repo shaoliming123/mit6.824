@@ -270,7 +270,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.persist()
 
 	rf.lastHeatBeatTime = time.Now()
-
 	rf.commitIndex = min(args.LeaderCommit, len(rf.persistentState.Entry)-1)
 }
 
@@ -365,7 +364,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					if i == rf.me{
 						continue
 					}
-					go func() {
+					go func(i int) {
 					RETRY:
 						rf.mu.Lock()
 						p := rf.persistentState
@@ -387,15 +386,73 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						if !ok {
 							goto RETRY
 						}
-					}()
+					}(i)
 				}
 				continue
 			}
 			rf.mu.Lock()
 			t := rf.lastHeatBeatTime
 			rf.mu.Unlock()
-			if time.Since(t) > time.Duration(rand.Int63n(100))*time.Millisecond + 1000*time.Millisecond{
+			electTimeOut := time.Duration(rand.Int63n(100))*time.Millisecond + 1000*time.Millisecond
+			if time.Since(t) > electTimeOut {
 				// 心跳超时,开始选举
+				rf.mu.Lock()
+				// incur current term
+				rf.persistentState.CurrentTerm++
+				rf.persistentState.VoteFor = &rf.me
+				rf.role = candidate
+				rf.persist()
+				rf.mu.Unlock()
+				ch := make(chan *RequestVoteReply)
+				var wg sync.WaitGroup
+				for i := range rf.peers{
+					if i == rf.me{
+						continue
+					}
+					wg.Add(1)
+					go func(i int) {
+						defer wg.Done()
+						rf.mu.Lock()
+						p := rf.persistentState
+						rf.mu.Unlock()
+						lastLogIndex := -1
+						lastLogTerm := -1
+						if len(p.Entry) != 0 {
+							lastLogIndex = len(p.Entry) - 1
+							lastLogTerm = p.Entry[lastLogIndex].Term
+						}
+						reply := &RequestVoteReply{}
+						for retry := 0; retry < 3; retry++{
+							ok := rf.sendRequestVote(i, &RequestVoteArgs{
+								Term:         p.CurrentTerm,
+								CandidateId:  rf.me,
+								LastLogIndex: lastLogIndex,
+								LastLogTerm:  lastLogTerm,
+							}, reply)
+							if ok{
+								break
+							}
+						}
+						ch <- reply
+					}(i)
+				}
+				go func() {
+					wg.Done()
+					close(ch)
+				}()
+				cnt := 1
+				for reply := range ch {
+					if reply.VoteGranted{
+						cnt++
+					}
+				}
+				if cnt >= len(rf.peers)/2 + 1{
+					rf.mu.Lock()
+					rf.role = leader
+					rf.mu.Unlock()
+				}
+			}else{
+				time.Sleep((electTimeOut - time.Since(t))/2)
 			}
 		}
 	}()
