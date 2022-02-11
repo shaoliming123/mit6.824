@@ -19,7 +19,9 @@ package raft
 
 import (
 	"bytes"
+	"math/rand"
 	"sync"
+	"time"
 )
 import "sync/atomic"
 import "../labrpc"
@@ -91,6 +93,8 @@ type Raft struct {
 	// 每次选举完成后需要重新计算
 	nextIndex  []int
 	matchIndex []int
+
+	lastHeatBeatTime time.Time
 }
 
 // return currentTerm and whether this server
@@ -236,17 +240,17 @@ type AppendEntriesArgs struct {
 	Term         int // leader's term
 	LeaderId     int // so follower can redirect clients
 	PrevLogIndex int // index of log entry immediately preceding new ones
-	prevLogTerm int
+	prevLogTerm  int
 	Entries      []Entry
-	LeaderCommit int  // leader's commit
+	LeaderCommit int // leader's commit
 }
 
-type AppendEntriesReply struct{
-	Term int // for leader to udpate itself
+type AppendEntriesReply struct {
+	Term    int  // for leader to udpate itself
 	Success bool // for true if follower contained entry matching prevLogIndex and prevLogTerm
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if rf.persistentState.CurrentTerm > args.Term {
 		reply.Term = rf.persistentState.CurrentTerm
 		reply.Success = false
@@ -254,21 +258,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.PrevLogIndex < len(rf.persistentState.Entry) ||
-		rf.persistentState.Entry[args.prevLogTerm].Term != args.prevLogTerm{
+		rf.persistentState.Entry[args.prevLogTerm].Term != args.prevLogTerm {
 		reply.Term = rf.persistentState.CurrentTerm
 		reply.Success = false
 		return
 	}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.persistentState.Entry=rf.persistentState.Entry[:args.PrevLogIndex+1]
+	rf.persistentState.Entry = rf.persistentState.Entry[:args.PrevLogIndex+1]
 	rf.persistentState.Entry = append(rf.persistentState.Entry, args.Entries...)
 	rf.persist()
+
+	rf.lastHeatBeatTime = time.Now()
 
 	rf.commitIndex = min(args.LeaderCommit, len(rf.persistentState.Entry)-1)
 }
 
-func min(a,b int) int {
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func min(a, b int) int {
 	if a < b {
 		return a
 	}
@@ -342,6 +353,52 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	go func() {
+		for {
+
+			_, isLeader := rf.GetState()
+			if isLeader {
+
+				time.Sleep(time.Duration(rand.Int63n(50))*time.Millisecond + 300*time.Millisecond)
+				for i := range rf.peers {
+					if i == rf.me{
+						continue
+					}
+					go func() {
+					RETRY:
+						rf.mu.Lock()
+						p := rf.persistentState
+						rf.mu.Unlock()
+						prevLogIndex := -1
+						prevLogTerm := -1
+						if len(p.Entry) != 0 {
+							prevLogIndex = len(p.Entry) - 1
+							prevLogTerm = p.Entry[prevLogIndex].Term
+						}
+						ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
+							Term:         p.CurrentTerm,
+							LeaderId:     rf.me,
+							PrevLogIndex: prevLogIndex,
+							prevLogTerm:  prevLogTerm,
+							Entries:      nil,
+							LeaderCommit: rf.commitIndex,
+						}, &AppendEntriesReply{})
+						if !ok {
+							goto RETRY
+						}
+					}()
+				}
+				continue
+			}
+			rf.mu.Lock()
+			t := rf.lastHeatBeatTime
+			rf.mu.Unlock()
+			if time.Since(t) > time.Duration(rand.Int63n(100))*time.Millisecond + 1000*time.Millisecond{
+				// 心跳超时,开始选举
+			}
+		}
+	}()
 
 	return rf
 }
