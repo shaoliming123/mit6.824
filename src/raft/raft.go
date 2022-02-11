@@ -96,7 +96,8 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
 	var isleader bool
 
@@ -235,7 +236,8 @@ type AppendEntriesArgs struct {
 	Term         int // leader's term
 	LeaderId     int // so follower can redirect clients
 	PrevLogIndex int // index of log entry immediately preceding new ones
-	entries      []Entry
+	prevLogTerm int
+	Entries      []Entry
 	LeaderCommit int  // leader's commit
 }
 
@@ -245,7 +247,32 @@ type AppendEntriesReply struct{
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
-	
+	if rf.persistentState.CurrentTerm > args.Term {
+		reply.Term = rf.persistentState.CurrentTerm
+		reply.Success = false
+		return
+	}
+
+	if args.PrevLogIndex < len(rf.persistentState.Entry) ||
+		rf.persistentState.Entry[args.prevLogTerm].Term != args.prevLogTerm{
+		reply.Term = rf.persistentState.CurrentTerm
+		reply.Success = false
+		return
+	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.persistentState.Entry=rf.persistentState.Entry[:args.PrevLogIndex+1]
+	rf.persistentState.Entry = append(rf.persistentState.Entry, args.Entries...)
+	rf.persist()
+
+	rf.commitIndex = min(args.LeaderCommit, len(rf.persistentState.Entry)-1)
+}
+
+func min(a,b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 //
