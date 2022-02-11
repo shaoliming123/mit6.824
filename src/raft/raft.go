@@ -28,8 +28,6 @@ import "../labgob"
 // import "bytes"
 // import "../labgob"
 
-
-
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -51,13 +49,15 @@ type ApplyMsg struct {
 // A Go object implementing a single Raft peer.
 //
 
-type persistentState struct{
+type Entry struct {
+	Command []byte
+	Term    int
+}
+
+type persistentState struct {
 	CurrentTerm int
-	VoteFor *int
-	Entry []struct{
-		Command []byte
-		Term int
-	}
+	VoteFor     *int
+	Entry       []Entry
 }
 
 type roleType int
@@ -67,7 +67,6 @@ const (
 	candidate
 	leader
 )
-
 
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -83,6 +82,15 @@ type Raft struct {
 	persistentState persistentState
 
 	role roleType // default follower
+
+	// volatile state on all servers
+	commitIndex int // index of highest log entry known to be committed
+	lastApplied int // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+
+	// leader volatile state
+	// 每次选举完成后需要重新计算
+	nextIndex  []int
+	matchIndex []int
 }
 
 // return currentTerm and whether this server
@@ -121,7 +129,6 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(data)
 }
 
-
 //
 // restore previously persisted state.
 //
@@ -148,17 +155,14 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.persistentState)
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term int // candidate's term
-	CandidateId int  // candidate request vote
+	Term         int // candidate's term
+	CandidateId  int // candidate request vote
 	LastLogIndex int // candidate's last log entry
 	LastLogTerm  int // term of candidate's log entry
 }
@@ -169,7 +173,7 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term int // currentTerm, for candidate to update
+	Term        int  // currentTerm, for candidate to update
 	VoteGranted bool // true means candidate received vote
 }
 
@@ -178,13 +182,13 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	if rf.persistentState.CurrentTerm > args.Term{
+	if rf.persistentState.CurrentTerm > args.Term {
 		reply.Term = rf.persistentState.CurrentTerm
 		reply.VoteGranted = false
 	}
 	var voteGranted bool
-	if (rf.persistentState.VoteFor == nil ||  *rf.persistentState.VoteFor == args.CandidateId) &&
-		len(rf.persistentState.Entry) - 1 <= args.LastLogIndex{
+	if (rf.persistentState.VoteFor == nil || *rf.persistentState.VoteFor == args.CandidateId) &&
+		len(rf.persistentState.Entry)-1 <= args.LastLogIndex {
 		voteGranted = true
 	}
 
@@ -227,6 +231,22 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+type AppendEntriesArgs struct {
+	Term         int // leader's term
+	LeaderId     int // so follower can redirect clients
+	PrevLogIndex int // index of log entry immediately preceding new ones
+	entries      []Entry
+	LeaderCommit int  // leader's commit
+}
+
+type AppendEntriesReply struct{
+	Term int // for leader to udpate itself
+	Success bool // for true if follower contained entry matching prevLogIndex and prevLogTerm
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply){
+	
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -248,7 +268,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -296,7 +315,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	return rf
 }
