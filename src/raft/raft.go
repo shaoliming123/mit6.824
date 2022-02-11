@@ -19,6 +19,7 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -347,6 +348,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.lastHeatBeatTime = time.Now()
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -396,6 +398,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			electTimeOut := time.Duration(rand.Int63n(100))*time.Millisecond + 1000*time.Millisecond
 			if time.Since(t) > electTimeOut {
 				// 心跳超时,开始选举
+				fmt.Println("超时开始选举, server", rf.me)
 				rf.mu.Lock()
 				// incur current term
 				rf.persistentState.CurrentTerm++
