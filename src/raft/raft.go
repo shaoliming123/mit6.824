@@ -107,7 +107,7 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 
 	// Your code here (2A).
-	rf.readPersist(rf.persister.ReadRaftState())
+	//rf.readPersist(rf.persister.ReadRaftState())
 	// TODO: should we add lock?
 	term = rf.persistentState.CurrentTerm
 	isleader = rf.role == leader
@@ -188,6 +188,9 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	fmt.Println("candidate ", args.CandidateId," term ",args.Term, " follower ", rf.me, " term ", rf.persistentState.CurrentTerm)
 	if rf.persistentState.CurrentTerm > args.Term {
 		reply.Term = rf.persistentState.CurrentTerm
 		reply.VoteGranted = false
@@ -196,10 +199,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (rf.persistentState.VoteFor == nil || *rf.persistentState.VoteFor == args.CandidateId) &&
 		len(rf.persistentState.Entry)-1 <= args.LastLogIndex {
 		voteGranted = true
+		rf.persistentState.VoteFor = &args.CandidateId
+		rf.persist()
 	}
 
 	reply.Term = args.Term
 	reply.VoteGranted = voteGranted
+
 
 }
 
@@ -241,7 +247,7 @@ type AppendEntriesArgs struct {
 	Term         int // leader's term
 	LeaderId     int // so follower can redirect clients
 	PrevLogIndex int // index of log entry immediately preceding new ones
-	prevLogTerm  int
+	PrevLogTerm  int
 	Entries      []Entry
 	LeaderCommit int // leader's commit
 }
@@ -258,8 +264,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	if args.PrevLogIndex < len(rf.persistentState.Entry) ||
-		rf.persistentState.Entry[args.prevLogTerm].Term != args.prevLogTerm {
+	if args.PrevLogIndex < len(rf.persistentState.Entry)-1 ||
+		args.PrevLogIndex >= 0 &&rf.persistentState.Entry[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Term = rf.persistentState.CurrentTerm
 		reply.Success = false
 		return
@@ -268,6 +274,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	rf.persistentState.Entry = rf.persistentState.Entry[:args.PrevLogIndex+1]
 	rf.persistentState.Entry = append(rf.persistentState.Entry, args.Entries...)
+	if args.Term > rf.persistentState.CurrentTerm{
+		rf.persistentState.VoteFor = nil
+		rf.persistentState.CurrentTerm = args.Term
+	}
 	rf.persist()
 
 	rf.lastHeatBeatTime = time.Now()
@@ -356,12 +366,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	go func() {
+		electTimeOut :=300*time.Millisecond + time.Duration(rand.Int63n(100))*time.Millisecond
+
 		for {
-
 			_, isLeader := rf.GetState()
+			fmt.Println("server ", rf.me, " is ", isLeader)
 			if isLeader {
-
-				time.Sleep(time.Duration(rand.Int63n(50))*time.Millisecond + 300*time.Millisecond)
 				for i := range rf.peers {
 					if i == rf.me{
 						continue
@@ -381,7 +391,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							Term:         p.CurrentTerm,
 							LeaderId:     rf.me,
 							PrevLogIndex: prevLogIndex,
-							prevLogTerm:  prevLogTerm,
+							PrevLogTerm:  prevLogTerm,
 							Entries:      nil,
 							LeaderCommit: rf.commitIndex,
 						}, &AppendEntriesReply{})
@@ -390,18 +400,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						}
 					}(i)
 				}
+				time.Sleep(time.Duration(rand.Int63n(50))*time.Millisecond + 200*time.Millisecond)
 				continue
 			}
 			rf.mu.Lock()
 			t := rf.lastHeatBeatTime
 			rf.mu.Unlock()
-			electTimeOut := time.Duration(rand.Int63n(100))*time.Millisecond + 1000*time.Millisecond
 			if time.Since(t) > electTimeOut {
 				// 心跳超时,开始选举
 				fmt.Println("超时开始选举, server", rf.me)
 				rf.mu.Lock()
 				// incur current term
 				rf.persistentState.CurrentTerm++
+				fmt.Println("server ", rf.me, " term is ",rf.persistentState.CurrentTerm)
 				rf.persistentState.VoteFor = &rf.me
 				rf.role = candidate
 				rf.persist()
@@ -414,7 +425,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					}
 					wg.Add(1)
 					go func(i int) {
-						defer wg.Wait()
+						defer wg.Done()
 						rf.mu.Lock()
 						p := rf.persistentState
 						rf.mu.Unlock()
@@ -436,16 +447,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 								break
 							}
 						}
+						fmt.Println("server ", rf.me, "request vote to server ", i, "granted: ", reply.VoteGranted)
 						ch <- reply
 					}(i)
 				}
 				go func() {
-					wg.Done()
+					wg.Wait()
 					close(ch)
 				}()
 				cnt := 1
 				for reply := range ch {
+					fmt.Println("candidate ", rf.me, "reply ", reply)
 					if reply.VoteGranted{
+						fmt.Println("grant vote to", rf.me)
 						cnt++
 					}
 				}
@@ -455,7 +469,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.mu.Unlock()
 				}
 			}else{
-				time.Sleep((electTimeOut - time.Since(t))/2)
+				time.Sleep((electTimeOut - time.Since(t))/4)
 			}
 		}
 	}()
